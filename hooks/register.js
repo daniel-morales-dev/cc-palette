@@ -3,8 +3,8 @@
  *
  * `/palette` opens a pane with two tabs:
  *   MCPs    — the MCP servers configured for this session (global and project)
- *   Models  — the session model, what settings/env configure, the model and
- *             effort rows from /config as one-press options, and a button
+ *   Models  — the session model and effort, one-press overrides for your next
+ *             messages (model list from /config, effort levels), and a button
  *             that opens the native /model picker
  *
  * The command registers with `immediate: true`, so it runs while Claude is
@@ -21,6 +21,9 @@ const STASH_KEY = 'stashed-draft'
 let tab = 'mcps'
 let data = null
 let notice = ''
+let overrideModel = ''
+let overrideEffort = ''
+let lastStep = null
 
 function asString(value) {
   return typeof value === 'string' ? value : ''
@@ -68,6 +71,16 @@ function prettyValue(value) {
   if (oneM && names[oneM[1]]) return names[oneM[1]] + ' (1M)'
   return value
 }
+
+// "claude-opus-5-5" reads as "Opus 5.5".
+function prettyModel(id) {
+  const match = /^claude-([a-z]+)-(\d+)-(\d+)$/.exec(asString(id))
+  if (!match) return asString(id)
+  const family = match[1].charAt(0).toUpperCase() + match[1].slice(1)
+  return family + ' ' + match[2] + '.' + match[3]
+}
+
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 async function collect($) {
   const home = asString(await $.env.get('HOME'))
@@ -193,7 +206,7 @@ function mcpRows(Box, Text, mcps) {
   )
 }
 
-function modelRows(Box, Text, Button, models, configs, onSwitch, onOpenPicker) {
+function modelRows(Box, Text, Button, models, configs, onPickModel, onPickEffort, onClear, onOpenPicker) {
   const row = (key, label, value) =>
     Box({
       key: 'model-' + key,
@@ -202,36 +215,77 @@ function modelRows(Box, Text, Button, models, configs, onSwitch, onOpenPicker) {
       children: [Text({ bold: true, children: [label] }), Text({ children: [value] })],
     })
 
-  const rows = [row('session', 'Session', models.session || 'unknown')]
+  const active = lastStep && lastStep.model ? lastStep.model : models.session
+  const rows = [row('session', 'Session', prettyModel(active) || 'unknown')]
+  if (lastStep && lastStep.effort !== undefined && lastStep.effort !== null) {
+    rows.push(row('effort', 'Effort', prettyValue(String(lastStep.effort))))
+  }
   if (models.configured) rows.push(row('default', 'Default (settings)', models.configured))
   if (models.env) rows.push(row('env', 'ANTHROPIC_MODEL', models.env))
   if (models.smallFast) rows.push(row('small', 'Small/fast', models.smallFast))
+
+  if (overrideModel || overrideEffort) {
+    const parts = []
+    if (overrideModel) parts.push(prettyValue(overrideModel))
+    if (overrideEffort) parts.push('effort ' + prettyValue(overrideEffort))
+    rows.push(row('override', 'Next message', parts.join(' · ')))
+  }
   rows.push(Text({ children: [' '] }))
 
+  // The /config row names the models this build offers.
+  const modelRow =
+    configs.find((config) => /^model$/i.test(config.label)) ||
+    configs.find((config) => /^model$/i.test(config.key)) ||
+    configs.find((config) => config.kind === 'choice' && config.options.length > 0 && !config.isLocked)
+
   for (const config of configs) {
-    const pickable = config.kind === 'choice' && config.options.length > 0 && !config.isLocked
-    if (!pickable) {
-      rows.push(
-        row('cfg-' + config.key, config.label, config.value + (config.isLocked ? ' (locked)' : '')),
-      )
-      continue
-    }
-    rows.push(Text({ bold: true, children: [config.label] }))
-    for (const option of config.options) {
-      const current = option === config.value
+    if (config === modelRow) continue
+    rows.push(
+      row('cfg-' + config.key, config.label, config.value + (config.isLocked ? ' (locked)' : '')),
+    )
+  }
+
+  if (modelRow) {
+    rows.push(Text({ bold: true, children: [modelRow.label] }))
+    for (const option of modelRow.options) {
+      const current = option === overrideModel
       rows.push(
         Button({
-          key: 'pick-' + config.key + '-' + option,
+          key: 'pick-model-' + option,
           label: (current ? '✓ ' : '  ') + prettyValue(option),
           plain: true,
           dimColor: !current,
-          onPress: () => onSwitch(config.key, option),
+          onPress: () => onPickModel(option),
         }),
       )
     }
     rows.push(Text({ children: [' '] }))
   }
 
+  rows.push(Text({ bold: true, children: ['Effort'] }))
+  for (const level of EFFORTS) {
+    const current = level === overrideEffort
+    rows.push(
+      Button({
+        key: 'pick-effort-' + level,
+        label: (current ? '✓ ' : '  ') + prettyValue(level),
+        plain: true,
+        dimColor: !current,
+        onPress: () => onPickEffort(level),
+      }),
+    )
+  }
+  rows.push(Text({ children: [' '] }))
+
+  if (overrideModel || overrideEffort) {
+    rows.push(
+      Button({
+        key: 'clear-overrides',
+        label: 'Clear overrides (use the session model)',
+        onPress: () => onClear(),
+      }),
+    )
+  }
   rows.push(
     Button({
       key: 'open-model-picker',
@@ -295,6 +349,25 @@ export function register(on) {
     return next(e)
   })
 
+  // The picks override the next requests: `turn.step` lets a hook name the
+  // model and the effort each request goes out with. Main loop only — a
+  // subagent keeps the model its agent file names.
+  on('turn.step', async function* ($, e, next) {
+    let input = e
+    try {
+      if (!e.agentId) {
+        lastStep = { model: e.model, effort: e.effort }
+        const patch = {}
+        if (overrideModel) patch.model = overrideModel
+        if (overrideEffort) patch.effort = overrideEffort
+        if (patch.model !== undefined || patch.effort !== undefined) {
+          input = { ...e, ...patch }
+        }
+      }
+    } catch {}
+    yield* next(input)
+  })
+
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE_ID) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
@@ -302,17 +375,26 @@ export function register(on) {
 
     if (!data) data = await collect($)
 
-    const switchModel = async (key, value) => {
-      try {
-        const result = await $.config.set({ key, value })
-        notice =
-          result && result.deny
-            ? 'Model change refused: ' + result.deny
-            : 'Model set to ' + prettyValue(value) + '.'
-      } catch (error) {
-        notice = 'Model change failed: ' + (error && error.message ? error.message : String(error))
-      }
-      data = null
+    const pickModel = (value) => {
+      overrideModel = value === overrideModel ? '' : value
+      notice = overrideModel
+        ? 'Next message uses ' + prettyValue(overrideModel) + ' — press it again to clear.'
+        : 'Model override cleared — the session model applies.'
+      redraw()
+    }
+
+    const pickEffort = (value) => {
+      overrideEffort = value === overrideEffort ? '' : value
+      notice = overrideEffort
+        ? 'Next message uses effort ' + prettyValue(overrideEffort) + ' — press it again to clear.'
+        : 'Effort override cleared.'
+      redraw()
+    }
+
+    const clearOverrides = () => {
+      overrideModel = ''
+      overrideEffort = ''
+      notice = 'Overrides cleared — the session model and effort apply.'
       redraw()
     }
 
@@ -371,7 +453,17 @@ export function register(on) {
     const body =
       tab === 'mcps'
         ? mcpRows(Box, Text, data.mcps)
-        : modelRows(Box, Text, Button, data.models, data.configs, switchModel, openModelPicker)
+        : modelRows(
+            Box,
+            Text,
+            Button,
+            data.models,
+            data.configs,
+            pickModel,
+            pickEffort,
+            clearOverrides,
+            openModelPicker,
+          )
 
     return Box({
       flexDirection: 'column',
