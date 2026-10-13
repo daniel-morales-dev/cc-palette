@@ -3,8 +3,8 @@
  *
  * `/palette` opens a pane with two tabs:
  *   MCPs    — the MCP servers configured for this session (global and project)
- *   Models  — the session model, what settings/env configure, and a switcher
- *             when /config exposes a model row
+ *   Models  — the session model, what settings/env configure, and a button
+ *             that opens the native /model picker to switch
  *
  * The command registers with `immediate: true`, so it runs while Claude is
  * working. Bind Ctrl+P (or Cmd+P) to `command:palette` in
@@ -169,7 +169,7 @@ function mcpRows(Box, Text, mcps) {
   )
 }
 
-function modelRows(Box, Text, Select, models, configs, onSwitch) {
+function modelRows(Box, Text, Button, Select, models, configs, onSwitch, onOpenPicker) {
   const row = (key, label, value) =>
     Box({
       key: 'model-' + key,
@@ -201,9 +201,10 @@ function modelRows(Box, Text, Select, models, configs, onSwitch) {
 
   if (switchable.length === 0) {
     rows.push(
-      Text({
-        dimColor: true,
-        children: ['Switch models with /model — this pane shows what is configured.'],
+      Button({
+        key: 'open-model-picker',
+        label: 'Change model (opens /model)',
+        onPress: () => onOpenPicker(),
       }),
     )
   }
@@ -284,6 +285,25 @@ export function register(on) {
       redraw()
     }
 
+    const openModelPicker = async () => {
+      try {
+        await $.command.run({ command: 'model' })
+        notice = 'Model picker opened — the pane refreshes when you are back.'
+      } catch (error) {
+        // Direct run refused: put /model in the composer so Enter runs it.
+        try {
+          await $.prompt.fill({ text: '/model', mode: 'replace' })
+          notice = 'Could not run /model directly — it is in your prompt: press Enter.'
+        } catch {
+          notice =
+            'Could not open the model picker: ' +
+            (error && error.message ? error.message : String(error))
+        }
+      }
+      data = null
+      redraw()
+    }
+
     const tabButton = (name, label, hotkey) =>
       Button({
         key: 'tab-' + name,
@@ -320,7 +340,7 @@ export function register(on) {
     const body =
       tab === 'mcps'
         ? mcpRows(Box, Text, data.mcps)
-        : modelRows(Box, Text, Select, data.models, data.configs, switchModel)
+        : modelRows(Box, Text, Button, Select, data.models, data.configs, switchModel, openModelPicker)
 
     return Box({
       flexDirection: 'column',

@@ -7,7 +7,7 @@ Type `/palette` and a pane opens beside the transcript with two tabs:
 | Tab | Shows |
 | --- | --- |
 | **MCPs** | Every MCP server available to the session — global servers from `~/.claude.json`, project-scoped servers, and the project's `.mcp.json` — with transport and launch target |
-| **Models** | The session's current model, the default configured in settings, model-related environment overrides — and a picker to switch the model right there when `/config` exposes a model row |
+| **Models** | The session's current model, the default configured in settings, model-related environment overrides — and a button that opens the native `/model` picker to switch |
 
 Built as a Claude Code [mod](https://code.claude.com/docs/en/plugins/mods), so the command registers with `immediate: true`: it works **while Claude is working**, like OpenCode's `ctrl+p` palette.
 
@@ -42,7 +42,7 @@ claude --plugin-dir /path/to/cc-palette
   - `r` — refresh the data
   - `Tab` / arrows — move between controls
   - `Esc` — close the pane
-- On the Models tab, pick a model from the selector to switch it before you send (when `/config` has a model row; otherwise use `/model`)
+- On the Models tab, **Change model** opens the native `/model` picker — switch the model before you send
 - With the Ctrl+P binding below, the shortcut toggles the pane open and closed
 
 The pane reads configuration when it opens; press `r` after changing MCP servers or settings.
@@ -81,7 +81,7 @@ The mod is a single hooks module (`hooks/register.js`):
 Data sources:
 
 - MCP servers: `mcpServers` in `~/.claude.json`, `projects[<cwd>].mcpServers` in the same file, and `mcpServers` in `<project>/.mcp.json`. Later sources override earlier ones, so project config wins over global.
-- Models: the session model (`$.session.model()`), `model` from `~/.claude/settings.json` or the project's `.claude/settings.json`, and the `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` environment variables. The Models tab also lists the `/config` rows about the model (`$.config.list()`) and switches a choice row with `$.config.set` — the same change the `/config` menu makes, before you send.
+- Models: the session model (`$.session.model()`), `model` from `~/.claude/settings.json` or the project's `.claude/settings.json`, and the `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` environment variables. The Models tab lists any `/config` rows about the model (`$.config.list()`) and its **Change model** button runs `/model` (`$.command.run`), so you can switch without leaving the pane.
 
 ## Development
 
