@@ -6,13 +6,19 @@
  *   Models  — the session model and the models configured in settings/env
  *
  * The command registers with `immediate: true`, so it runs while Claude is
- * working, like OpenCode's ctrl+p palette.
+ * working. Bind Ctrl+P (or Cmd+P) to `command:palette` in
+ * ~/.claude/keybindings.json to open it from the keyboard — see the README.
+ *
+ * When the composer holds a draft, the draft is stashed while the pane is open
+ * and restored when it closes, so the pane takes the keyboard right away.
  */
 
 const PANE_ID = 'cc-palette'
+const STASH_KEY = 'stashed-draft'
 
 let tab = 'mcps'
 let data = null
+let notice = ''
 
 function asString(value) {
   return typeof value === 'string' ? value : ''
@@ -98,6 +104,27 @@ async function collect($) {
   return { mcps, models }
 }
 
+async function stashDraft($) {
+  const box = await $.prompt.read()
+  if (!box.text) return { stashed: false, hint: false }
+  await $.store.set(STASH_KEY, box.text)
+  const cleared = await $.prompt.fill({ text: '', mode: 'replace' })
+  if (!cleared.isFilled) {
+    await $.store.delete(STASH_KEY)
+    return { stashed: false, hint: true }
+  }
+  return { stashed: true, hint: false }
+}
+
+async function restoreDraft($) {
+  const stash = await $.store.get(STASH_KEY)
+  if (typeof stash !== 'string' || stash === '') return
+  const box = await $.prompt.read()
+  const text = box.text ? stash + '\n' + box.text : stash
+  const filled = await $.prompt.fill({ text, mode: 'replace' })
+  if (filled.isFilled) await $.store.delete(STASH_KEY)
+}
+
 function mcpRows(Box, Text, mcps) {
   if (mcps.length === 0) {
     return [Text({ dimColor: true, children: ['No MCP servers configured for this session.'] })]
@@ -159,15 +186,45 @@ export function register(on) {
     } catch {
       // A built-in or another plugin already owns /palette; everything else still loads.
     }
+    // A draft left stashed by an interrupted session comes back here.
+    try {
+      await restoreDraft($)
+    } catch {}
     return next(e)
   })
 
   on('command.run', { command: 'palette' }, async ($, e) => {
     const arg = asString(e.args).trim().toLowerCase()
     if (arg === 'mcps' || arg === 'models') tab = arg
+
+    const panes = await $.ui.panes()
+    if (panes.some((pane) => pane.id === PANE_ID)) {
+      // The shortcut pressed again closes the pane, like a palette toggle.
+      try {
+        await $.ui.close({ id: PANE_ID })
+      } catch {}
+      return {}
+    }
+
+    const stash = await stashDraft($)
+    notice = stash.hint
+      ? 'Composer has text — press Ctrl+X Tab to give this pane the keyboard.'
+      : stash.stashed
+        ? 'Draft stashed — it returns when the palette closes.'
+        : ''
     data = null
     await $.ui.open({ id: PANE_ID, title: 'Palette', focus: true, closeOnEscape: true })
     return {}
+  })
+
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE_ID) {
+      notice = ''
+      try {
+        await restoreDraft($)
+      } catch {}
+    }
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
@@ -215,7 +272,14 @@ export function register(on) {
 
     return Box({
       flexDirection: 'column',
-      children: [header, Text({ children: [' '] }), ...body],
+      children: [
+        header,
+        Text({ children: [' '] }),
+        ...body,
+        ...(notice
+          ? [Text({ children: [' '] }), Text({ dimColor: true, children: [notice] })]
+          : []),
+      ],
     })
   })
 }

@@ -42,15 +42,39 @@ claude --plugin-dir /path/to/cc-palette
   - `r` — refresh the data
   - `Tab` / arrows — move between controls
   - `Esc` — close the pane
+- With the Ctrl+P binding below, the shortcut toggles the pane open and closed
 
 The pane reads configuration when it opens; press `r` after changing MCP servers or settings.
+
+### Open it from the keyboard (Ctrl+P / Cmd+P)
+
+Mods can't bind global keys, but Claude Code's own keybindings can run a slash command. Add this to `~/.claude/keybindings.json` (run `/keybindings` to create the file):
+
+```json
+{
+  "bindings": [
+    {
+      "context": "Chat",
+      "bindings": {
+        "ctrl+p": "command:palette",
+        "cmd+p": "command:palette"
+      }
+    }
+  ]
+}
+```
+
+Now `Ctrl+P` opens the palette — even while you are typing — and pressing it again closes it. The file is watched, so changes apply without restarting Claude Code. (`cmd+p` needs a terminal that reports the Super key, such as one with the Kitty keyboard protocol.)
+
+A draft in the composer is stashed while the pane is open and put back when it closes, so the pane takes the keyboard right away.
 
 ## How it works
 
 The mod is a single hooks module (`hooks/register.js`):
 
-- `session.start` registers the `/palette` command
-- `command.run` opens the pane (`$.ui.open`)
+- `session.start` registers the `/palette` command and restores a stashed draft after an interrupted session
+- `command.run` stashes any composer draft, opens the pane (`$.ui.open`) — or closes it when it is already open
+- `ui.close` restores the stashed draft when the pane closes
 - `ui.render`, filtered to this pane, reads the configuration through the mods API and draws the tabs
 
 Data sources:
