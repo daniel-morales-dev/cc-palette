@@ -1,0 +1,14 @@
+{
+  "name": "cc-palette",
+  "displayName": "Command Palette",
+  "version": "0.1.0",
+  "description": "A /palette pane that shows your MCP servers and models without leaving the prompt.",
+  "author": {
+    "name": "Daniel Morales",
+    "url": "https://github.com/daniel-morales-dev"
+  },
+  "homepage": "https://github.com/daniel-morales-dev/cc-palette",
+  "repository": "https://github.com/daniel-morales-dev/cc-palette",
+  "license": "MIT",
+  "keywords": ["palette", "mcp", "models", "mod"]
+}

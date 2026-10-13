@@ -1,0 +1,15 @@
+{
+  "name": "cc-palette",
+  "owner": {
+    "name": "Daniel Morales",
+    "url": "https://github.com/daniel-morales-dev"
+  },
+  "description": "Claude Code mod: a /palette pane for MCP servers and models.",
+  "plugins": [
+    {
+      "name": "cc-palette",
+      "source": "./",
+      "description": "A /palette pane that shows your MCP servers and models without leaving the prompt."
+    }
+  ]
+}
