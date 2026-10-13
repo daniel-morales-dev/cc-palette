@@ -356,13 +356,13 @@ export function register(on) {
     let input = e
     try {
       if (!e.agentId) {
-        lastStep = { model: e.model, effort: e.effort }
         const patch = {}
         if (overrideModel) patch.model = overrideModel
         if (overrideEffort) patch.effort = overrideEffort
         if (patch.model !== undefined || patch.effort !== undefined) {
           input = { ...e, ...patch }
         }
+        lastStep = { model: input.model, effort: input.effort }
       }
     } catch {}
     yield* next(input)
