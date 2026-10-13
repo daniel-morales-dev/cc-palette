@@ -22,6 +22,7 @@ let tab = 'mcps'
 let data = null
 let notice = ''
 let lastStep = null
+let pendingStatus = ''
 
 function asString(value) {
   return typeof value === 'string' ? value : ''
@@ -178,20 +179,25 @@ async function restoreDraft($) {
   if (filled.isFilled) await $.store.delete(STASH_KEY)
 }
 
-// Brings the keyboard back to the pane: re-opening with `focus` asks for it
-// again. A composer holding text refuses, and the caller tells the person.
-async function focusPane($) {
+// The keyboard cannot be taken back programmatically once the pane loses it
+// (verified live: re-opens, waits and fresh ids are all refused), so a pick
+// dismisses the pane: the next Ctrl+P opens it fresh, and a fresh open takes
+// the keyboard every time.
+function closePane($) {
   try {
-    const placed = await $.ui.open({
-      id: PANE_ID,
-      title: 'Palette',
-      focus: true,
-      closeOnEscape: true,
-    })
-    return !placed || placed.isPlaced !== false
-  } catch {
-    return false
-  }
+    $.ui.close({ id: PANE_ID })
+  } catch {}
+}
+
+// After the pane is gone, a toast is the message that shows: `$.ui.status`
+// is dropped from a press or render context, a toast is not.
+function flushStatusSoon($) {
+  try {
+    if (pendingStatus) {
+      $.ui.toast(pendingStatus, { timeoutMs: 6000 })
+      pendingStatus = ''
+    }
+  } catch {}
 }
 
 function mcpRows(Box, Text, mcps) {
@@ -320,22 +326,13 @@ export function register(on) {
 
     const panes = await $.ui.panes()
     const mine = panes.find((pane) => pane.id === PANE_ID)
-    if (mine && mine.isFocused) {
-      // The shortcut pressed again closes the pane, like a palette toggle.
-      try {
-        await $.ui.close({ id: PANE_ID })
-      } catch {}
-      return {}
-    }
     if (mine) {
-      // Open but unfocused (a command ran): the shortcut brings it back.
-      notice = ''
-      const back = await focusPane($)
-      if (!back) {
-        notice = 'Press Ctrl+X Tab to give the pane the keyboard.'
-        try {
-          await $.ui.invalidate('ui.render')
-        } catch {}
+      // Open: the shortcut closes it. An unfocused pane can only come back
+      // focused through a fresh open, so closing is also the way back.
+      closePane($)
+      if (!mine.isFocused) {
+        pendingStatus = 'Palette closed — Ctrl+P reopens it focused.'
+        flushStatusSoon($)
       }
       return {}
     }
@@ -390,9 +387,9 @@ export function register(on) {
     }
 
     const runCommand = async (command, args, okMessage) => {
+      let message = okMessage
       try {
         await $.command.run({ command, args })
-        notice = okMessage
       } catch (error) {
         const reason = error && error.message ? error.message : String(error)
         // The command may not be available here — /effort needs a model that
@@ -403,7 +400,7 @@ export function register(on) {
           available = commands.some((info) => info.name === command)
         } catch {}
         if (!available) {
-          notice =
+          message =
             command === 'effort'
               ? 'Effort is not available on this model — switch to Opus or Sonnet to adjust it.'
               : 'Could not run /' + command + ': ' + reason
@@ -413,23 +410,20 @@ export function register(on) {
               text: '/' + command + ' ' + args,
               mode: 'replace',
             })
-            notice =
+            message =
               filled && filled.isFilled
                 ? 'Could not run /' + command + ' directly — it is in your prompt: press Enter.'
                 : 'Could not run /' + command + ': ' + reason
           } catch {
-            notice = 'Could not run /' + command + ': ' + reason
+            message = 'Could not run /' + command + ': ' + reason
           }
         }
       }
+      // A pick dismisses the pane; the message shows once the close settles.
       data = null
-      redraw()
-      // The keyboard went with the command: bring it back so the next pick lands.
-      const back = await focusPane($)
-      if (!back && notice === okMessage) {
-        notice = okMessage + ' Press Ctrl+X Tab to return to the pane.'
-        redraw()
-      }
+      pendingStatus = message + (message === okMessage ? ' Ctrl+P to pick again.' : '')
+      closePane($)
+      flushStatusSoon($)
     }
 
     const pickModel = (value) =>
@@ -440,20 +434,27 @@ export function register(on) {
     const openModelPicker = async () => {
       try {
         await $.command.run({ command: 'model' })
-        notice = 'Model picker opened — the pane refreshes when you are back.'
       } catch (error) {
         // Direct run refused: put /model in the composer so Enter runs it.
         try {
           await $.prompt.fill({ text: '/model', mode: 'replace' })
-          notice = 'Could not run /model directly — it is in your prompt: press Enter.'
+          pendingStatus = 'Could not run /model directly — it is in your prompt: press Enter.'
+          closePane($)
+          flushStatusSoon($)
+          return
         } catch {
-          notice =
+          pendingStatus =
             'Could not open the model picker: ' +
             (error && error.message ? error.message : String(error))
+          closePane($)
+          flushStatusSoon($)
+          return
         }
       }
       data = null
-      redraw()
+      pendingStatus = 'Model picker open — pick a model, then Ctrl+P reopens the palette.'
+      closePane($)
+      flushStatusSoon($)
     }
 
     const tabButton = (name, label, hotkey) =>
