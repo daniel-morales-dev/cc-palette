@@ -23,6 +23,8 @@ let data = null
 let notice = ''
 let lastStep = null
 let pendingStatus = ''
+let pinnedModel = ''
+let pinnedEffort = ''
 
 function asString(value) {
   return typeof value === 'string' ? value : ''
@@ -265,9 +267,11 @@ function modelRows(Box, Text, Button, models, configs, onPickModel, onPickEffort
       rows.push(
         Button({
           key: 'pick-model-' + option,
-          label: '  ' + prettyValue(option),
+          label:
+            (option === pinnedModel ? '● ' : option === modelRow.value ? '✓ ' : '  ') +
+            prettyValue(option),
           plain: true,
-          dimColor: option !== modelRow.value,
+          dimColor: option !== modelRow.value && option !== pinnedModel,
           onPress: () => onPickModel(option),
         }),
       )
@@ -280,13 +284,27 @@ function modelRows(Box, Text, Button, models, configs, onPickModel, onPickEffort
     rows.push(
       Button({
         key: 'pick-effort-' + level,
-        label: '  ' + prettyValue(level),
+        label: (level === pinnedEffort ? '● ' : '  ') + prettyValue(level),
         plain: true,
+        dimColor: level !== pinnedEffort && !(lastStep && lastStep.effort === level),
         onPress: () => onPickEffort(level),
       }),
     )
   }
   rows.push(Text({ children: [' '] }))
+
+  if (pinnedModel || pinnedEffort) {
+    const pinned = [pinnedModel && prettyValue(pinnedModel), pinnedEffort && prettyValue(pinnedEffort)]
+      .filter(Boolean)
+      .join(' · ')
+    rows.push(
+      Text({
+        dimColor: true,
+        children: ['● pinned (' + pinned + ') — press a pinned option again to apply it to the session.'],
+      }),
+    )
+    rows.push(Text({ children: [' '] }))
+  }
 
   rows.push(
     Button({
@@ -313,6 +331,8 @@ export function register(on) {
     // A new session starts with fresh data: servers and models may differ.
     data = null
     lastStep = null
+    pinnedModel = ''
+    pinnedEffort = ''
     // A draft left stashed by an interrupted session comes back here.
     try {
       await restoreDraft($)
@@ -386,50 +406,56 @@ export function register(on) {
       }
     }
 
-    const runCommand = async (command, args, okMessage) => {
-      let message = okMessage
-      try {
-        await $.command.run({ command, args })
-      } catch (error) {
-        const reason = error && error.message ? error.message : String(error)
-        // The command may not be available here — /effort needs a model that
-        // supports it; say so instead of filling a prompt that cannot run.
-        let available = true
+    // Pressing an option pins it and keeps the keyboard; pressing the pinned
+    // option again applies every pin to the session (native commands) and
+    // dismisses the pane.
+    const commitPicks = async () => {
+      const picks = []
+      if (pinnedModel)
+        picks.push({ command: 'model', args: pinnedModel, label: prettyValue(pinnedModel) })
+      if (pinnedEffort)
+        picks.push({ command: 'effort', args: pinnedEffort, label: prettyValue(pinnedEffort) })
+      pinnedModel = ''
+      pinnedEffort = ''
+      data = null
+      const applied = []
+      let failure = ''
+      for (const pick of picks) {
         try {
-          const commands = await $.command.list()
-          available = commands.some((info) => info.name === command)
-        } catch {}
-        if (!available) {
-          message =
-            command === 'effort'
-              ? 'Effort is not available on this model — switch to Opus or Sonnet to adjust it.'
-              : 'Could not run /' + command + ': ' + reason
-        } else {
-          try {
-            const filled = await $.prompt.fill({
-              text: '/' + command + ' ' + args,
-              mode: 'replace',
-            })
-            message =
-              filled && filled.isFilled
-                ? 'Could not run /' + command + ' directly — it is in your prompt: press Enter.'
-                : 'Could not run /' + command + ': ' + reason
-          } catch {
-            message = 'Could not run /' + command + ': ' + reason
-          }
+          await $.command.run({ command: pick.command, args: pick.args })
+          applied.push(pick.label)
+        } catch (error) {
+          failure =
+            'Could not run /' +
+            pick.command +
+            ' ' +
+            pick.args +
+            ': ' +
+            (error && error.message ? error.message : String(error))
+          break
         }
       }
-      // A pick dismisses the pane; the message shows once the close settles.
-      data = null
-      pendingStatus = message + (message === okMessage ? ' Ctrl+P to pick again.' : '')
       closePane($)
+      pendingStatus = failure || 'Session set to ' + applied.join(' · ') + '.'
       flushStatusSoon($)
     }
 
-    const pickModel = (value) =>
-      runCommand('model', value, 'Model set to ' + prettyValue(value) + '.')
-    const pickEffort = (value) =>
-      runCommand('effort', value, 'Effort set to ' + prettyValue(value) + '.')
+    const pickModel = (value) => {
+      if (value === pinnedModel) {
+        commitPicks()
+        return
+      }
+      pinnedModel = value
+      redraw()
+    }
+    const pickEffort = (value) => {
+      if (value === pinnedEffort) {
+        commitPicks()
+        return
+      }
+      pinnedEffort = value
+      redraw()
+    }
 
     const openModelPicker = async () => {
       try {
