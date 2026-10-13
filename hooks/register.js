@@ -3,7 +3,8 @@
  *
  * `/palette` opens a pane with two tabs:
  *   MCPs    — the MCP servers configured for this session (global and project)
- *   Models  — the session model and the models configured in settings/env
+ *   Models  — the session model, what settings/env configure, and a switcher
+ *             when /config exposes a model row
  *
  * The command registers with `immediate: true`, so it runs while Claude is
  * working. Bind Ctrl+P (or Cmd+P) to `command:palette` in
@@ -101,7 +102,24 @@ async function collect($) {
     smallFast: asString(await $.env.get('ANTHROPIC_SMALL_FAST_MODEL')),
   }
 
-  return { mcps, models }
+  // `/config` rows about the model. A choice row is switchable from the pane;
+  // the rows a session actually has are the engine's to say, so read live.
+  let configs = []
+  try {
+    const rows = await $.config.list()
+    configs = rows
+      .filter((row) => /model/i.test(row.key) || /model/i.test(row.label))
+      .map((row) => ({
+        key: row.key,
+        label: row.label,
+        kind: row.kind,
+        value: typeof row.value === 'string' ? row.value : String(row.value),
+        options: Array.isArray(row.options) ? row.options.slice() : [],
+        isLocked: row.isLocked === true,
+      }))
+  } catch {}
+
+  return { mcps, models, configs }
 }
 
 async function stashDraft($) {
@@ -151,7 +169,7 @@ function mcpRows(Box, Text, mcps) {
   )
 }
 
-function modelRows(Box, Text, models) {
+function modelRows(Box, Text, Select, models, configs, onSwitch) {
   const row = (key, label, value) =>
     Box({
       key: 'model-' + key,
@@ -165,12 +183,30 @@ function modelRows(Box, Text, models) {
   if (models.env) rows.push(row('env', 'ANTHROPIC_MODEL', models.env))
   if (models.smallFast) rows.push(row('small', 'Small/fast', models.smallFast))
   rows.push(Text({ children: [' '] }))
-  rows.push(
-    Text({
-      dimColor: true,
-      children: ['Switch models with /model — this pane shows what is configured.'],
-    }),
+
+  const switchable = configs.filter(
+    (config) => config.kind === 'choice' && config.options.length > 0 && !config.isLocked,
   )
+  for (const config of switchable) {
+    rows.push(
+      Select({
+        key: 'switch-' + config.key,
+        label: config.label,
+        options: config.options.map((option) => ({ value: option, label: option })),
+        value: config.value,
+        onSelect: (value) => onSwitch(config.key, value),
+      }),
+    )
+  }
+
+  if (switchable.length === 0) {
+    rows.push(
+      Text({
+        dimColor: true,
+        children: ['Switch models with /model — this pane shows what is configured.'],
+      }),
+    )
+  }
   return rows
 }
 
@@ -229,10 +265,24 @@ export function register(on) {
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE_ID) return next(e)
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const { Box, Text, Button, Select } = $.ui.resolve(e)
     const redraw = () => $.ui.invalidate('ui.render')
 
     if (!data) data = await collect($)
+
+    const switchModel = async (key, value) => {
+      try {
+        const result = await $.config.set({ key, value })
+        notice =
+          result && result.deny
+            ? 'Model change refused: ' + result.deny
+            : 'Model set to ' + value + '.'
+      } catch (error) {
+        notice = 'Model change failed: ' + (error && error.message ? error.message : String(error))
+      }
+      data = null
+      redraw()
+    }
 
     const tabButton = (name, label, hotkey) =>
       Button({
@@ -268,7 +318,9 @@ export function register(on) {
     })
 
     const body =
-      tab === 'mcps' ? mcpRows(Box, Text, data.mcps) : modelRows(Box, Text, data.models)
+      tab === 'mcps'
+        ? mcpRows(Box, Text, data.mcps)
+        : modelRows(Box, Text, Select, data.models, data.configs, switchModel)
 
     return Box({
       flexDirection: 'column',
