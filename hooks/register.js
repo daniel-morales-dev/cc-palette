@@ -3,8 +3,9 @@
  *
  * `/palette` opens a pane with two tabs:
  *   MCPs    — the MCP servers configured for this session (global and project)
- *   Models  — the session model, what settings/env configure, and a button
- *             that opens the native /model picker to switch
+ *   Models  — the session model, what settings/env configure, the model and
+ *             effort rows from /config as one-press options, and a button
+ *             that opens the native /model picker
  *
  * The command registers with `immediate: true`, so it runs while Claude is
  * working. Bind Ctrl+P (or Cmd+P) to `command:palette` in
@@ -43,6 +44,29 @@ function describeServer(config) {
       .filter((part) => typeof part === 'string' && part.length > 0)
       .join(' ')
   return { kind, target }
+}
+
+// "sonnet[1m]" reads as "Sonnet (1M)"; unknown values stay as they are.
+function prettyValue(value) {
+  const names = {
+    best: 'Best',
+    default: 'Default',
+    fable: 'Fable',
+    haiku: 'Haiku',
+    high: 'High',
+    low: 'Low',
+    max: 'Max',
+    medium: 'Medium',
+    none: 'None',
+    opus: 'Opus',
+    opusplan: 'Opus plan',
+    sonnet: 'Sonnet',
+  }
+  const plain = names[value]
+  if (plain) return plain
+  const oneM = /^([a-z]+)\[1m\]$/.exec(value)
+  if (oneM && names[oneM[1]]) return names[oneM[1]] + ' (1M)'
+  return value
 }
 
 async function collect($) {
@@ -108,7 +132,7 @@ async function collect($) {
   try {
     const rows = await $.config.list()
     configs = rows
-      .filter((row) => /model/i.test(row.key) || /model/i.test(row.label))
+      .filter((row) => /model|effort/i.test(row.key) || /model|effort/i.test(row.label))
       .map((row) => ({
         key: row.key,
         label: row.label,
@@ -169,7 +193,7 @@ function mcpRows(Box, Text, mcps) {
   )
 }
 
-function modelRows(Box, Text, Button, Select, models, configs, onSwitch, onOpenPicker) {
+function modelRows(Box, Text, Button, models, configs, onSwitch, onOpenPicker) {
   const row = (key, label, value) =>
     Box({
       key: 'model-' + key,
@@ -184,30 +208,37 @@ function modelRows(Box, Text, Button, Select, models, configs, onSwitch, onOpenP
   if (models.smallFast) rows.push(row('small', 'Small/fast', models.smallFast))
   rows.push(Text({ children: [' '] }))
 
-  const switchable = configs.filter(
-    (config) => config.kind === 'choice' && config.options.length > 0 && !config.isLocked,
-  )
-  for (const config of switchable) {
-    rows.push(
-      Select({
-        key: 'switch-' + config.key,
-        label: config.label,
-        options: config.options.map((option) => ({ value: option, label: option })),
-        value: config.value,
-        onSelect: (value) => onSwitch(config.key, value),
-      }),
-    )
+  for (const config of configs) {
+    const pickable = config.kind === 'choice' && config.options.length > 0 && !config.isLocked
+    if (!pickable) {
+      rows.push(
+        row('cfg-' + config.key, config.label, config.value + (config.isLocked ? ' (locked)' : '')),
+      )
+      continue
+    }
+    rows.push(Text({ bold: true, children: [config.label] }))
+    for (const option of config.options) {
+      const current = option === config.value
+      rows.push(
+        Button({
+          key: 'pick-' + config.key + '-' + option,
+          label: (current ? '✓ ' : '  ') + prettyValue(option),
+          plain: true,
+          dimColor: !current,
+          onPress: () => onSwitch(config.key, option),
+        }),
+      )
+    }
+    rows.push(Text({ children: [' '] }))
   }
 
-  if (switchable.length === 0) {
-    rows.push(
-      Button({
-        key: 'open-model-picker',
-        label: 'Change model (opens /model)',
-        onPress: () => onOpenPicker(),
-      }),
-    )
-  }
+  rows.push(
+    Button({
+      key: 'open-model-picker',
+      label: 'Change model (opens /model)',
+      onPress: () => onOpenPicker(),
+    }),
+  )
   return rows
 }
 
@@ -266,7 +297,7 @@ export function register(on) {
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE_ID) return next(e)
-    const { Box, Text, Button, Select } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
     const redraw = () => $.ui.invalidate('ui.render')
 
     if (!data) data = await collect($)
@@ -277,7 +308,7 @@ export function register(on) {
         notice =
           result && result.deny
             ? 'Model change refused: ' + result.deny
-            : 'Model set to ' + value + '.'
+            : 'Model set to ' + prettyValue(value) + '.'
       } catch (error) {
         notice = 'Model change failed: ' + (error && error.message ? error.message : String(error))
       }
@@ -340,7 +371,7 @@ export function register(on) {
     const body =
       tab === 'mcps'
         ? mcpRows(Box, Text, data.mcps)
-        : modelRows(Box, Text, Button, Select, data.models, data.configs, switchModel, openModelPicker)
+        : modelRows(Box, Text, Button, data.models, data.configs, switchModel, openModelPicker)
 
     return Box({
       flexDirection: 'column',
