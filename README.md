@@ -7,7 +7,7 @@ Type `/palette` and a pane opens beside the transcript with two tabs:
 | Tab | Shows |
 | --- | --- |
 | **MCPs** | Every MCP server available to the session — global servers from `~/.claude.json`, project-scoped servers, and the project's `.mcp.json` — with transport and launch target |
-| **Models** | The session's model and effort, one-press overrides for your next messages (model options from `/config`, effort levels low → max), and a button that opens the native `/model` picker |
+| **Models** | The session's model and effort, one-press switches through the native `/model` and `/effort` commands (model options from `/config`, effort levels low → max), and a button that opens the `/model` picker |
 
 Built as a Claude Code [mod](https://code.claude.com/docs/en/plugins/mods), so the command registers with `immediate: true`: it works **while Claude is working**, like OpenCode's `ctrl+p` palette.
 
@@ -42,7 +42,7 @@ claude --plugin-dir /path/to/cc-palette
   - `r` — refresh the data
   - `Tab` / arrows — move between controls
   - `Esc` — close the pane
-- On the Models tab, press a model or an effort level to override your next messages — press it again to clear, or use **Clear overrides**
+- On the Models tab, press a model or an effort level to switch the session right away — it applies to your next message — or use **Change model** for the native `/model` picker
 - With the Ctrl+P binding below, the shortcut toggles the pane open and closed
 
 The pane reads configuration when it opens; press `r` after changing MCP servers or settings.
@@ -76,13 +76,13 @@ The mod is a single hooks module (`hooks/register.js`):
 - `session.start` registers the `/palette` command and restores a stashed draft after an interrupted session
 - `command.run` stashes any composer draft, opens the pane (`$.ui.open`) — or closes it when it is already open
 - `ui.close` restores the stashed draft when the pane closes
-- `turn.step` sends the next requests with the picked model and effort (`next({ ...e, model, effort })`), main loop only
+- `turn.step` observes the model and effort each request goes out with, for the Session and Effort rows
 - `ui.render`, filtered to this pane, reads the configuration through the mods API and draws the tabs
 
 Data sources:
 
 - MCP servers: `mcpServers` in `~/.claude.json`, `projects[<cwd>].mcpServers` in the same file, and `mcpServers` in `<project>/.mcp.json`. Later sources override earlier ones, so project config wins over global.
-- Models: the session model (`$.session.model()`), `model` from `~/.claude/settings.json` or the project's `.claude/settings.json`, and the `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` environment variables. The model options come from the `/config` row (`$.config.list()`); a pick is applied per request through the `turn.step` hook, so it takes effect on your next message without touching your settings. **Change model** runs `/model` (`$.command.run`) for the native picker, where every version and the effort slider live.
+- Models: the session model (`$.session.model()`), `model` from `~/.claude/settings.json` or the project's `.claude/settings.json`, and the `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` environment variables. The model options come from the `/config` row (`$.config.list()`); a press runs the native `/model <alias>` or `/effort <level>` (`$.command.run`) — the same switch the slash commands make, so the status line at the bottom reflects it. **Change model** opens the picker for versions and the effort slider.
 
 ## Development
 

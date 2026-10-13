@@ -1,7 +1,7 @@
 {
   "name": "cc-palette",
   "displayName": "Command Palette",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "A /palette pane that shows your MCP servers and models without leaving the prompt.",
   "author": {
     "name": "Daniel Morales",

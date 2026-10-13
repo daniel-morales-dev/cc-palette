@@ -3,9 +3,9 @@
  *
  * `/palette` opens a pane with two tabs:
  *   MCPs    — the MCP servers configured for this session (global and project)
- *   Models  — the session model and effort, one-press overrides for your next
- *             messages (model list from /config, effort levels), and a button
- *             that opens the native /model picker
+ *   Models  — the session model and effort, one-press switches through the
+ *             native /model and /effort commands (the model list from
+ *             /config), and a button that opens the /model picker
  *
  * The command registers with `immediate: true`, so it runs while Claude is
  * working. Bind Ctrl+P (or Cmd+P) to `command:palette` in
@@ -21,8 +21,6 @@ const STASH_KEY = 'stashed-draft'
 let tab = 'mcps'
 let data = null
 let notice = ''
-let overrideModel = ''
-let overrideEffort = ''
 let lastStep = null
 
 function asString(value) {
@@ -206,7 +204,7 @@ function mcpRows(Box, Text, mcps) {
   )
 }
 
-function modelRows(Box, Text, Button, models, configs, onPickModel, onPickEffort, onClear, onOpenPicker) {
+function modelRows(Box, Text, Button, models, configs, onPickModel, onPickEffort, onOpenPicker) {
   const row = (key, label, value) =>
     Box({
       key: 'model-' + key,
@@ -223,16 +221,10 @@ function modelRows(Box, Text, Button, models, configs, onPickModel, onPickEffort
   if (models.configured) rows.push(row('default', 'Default (settings)', models.configured))
   if (models.env) rows.push(row('env', 'ANTHROPIC_MODEL', models.env))
   if (models.smallFast) rows.push(row('small', 'Small/fast', models.smallFast))
-
-  if (overrideModel || overrideEffort) {
-    const parts = []
-    if (overrideModel) parts.push(prettyValue(overrideModel))
-    if (overrideEffort) parts.push('effort ' + prettyValue(overrideEffort))
-    rows.push(row('override', 'Next message', parts.join(' · ')))
-  }
   rows.push(Text({ children: [' '] }))
 
-  // The /config row names the models this build offers.
+  // The /config row names the models this build offers; a press switches the
+  // session through the native /model command, versions and all.
   const modelRow =
     configs.find((config) => /^model$/i.test(config.label)) ||
     configs.find((config) => /^model$/i.test(config.key)) ||
@@ -248,13 +240,12 @@ function modelRows(Box, Text, Button, models, configs, onPickModel, onPickEffort
   if (modelRow) {
     rows.push(Text({ bold: true, children: [modelRow.label] }))
     for (const option of modelRow.options) {
-      const current = option === overrideModel
       rows.push(
         Button({
           key: 'pick-model-' + option,
-          label: (current ? '✓ ' : '  ') + prettyValue(option),
+          label: '  ' + prettyValue(option),
           plain: true,
-          dimColor: !current,
+          dimColor: option !== modelRow.value,
           onPress: () => onPickModel(option),
         }),
       )
@@ -264,28 +255,17 @@ function modelRows(Box, Text, Button, models, configs, onPickModel, onPickEffort
 
   rows.push(Text({ bold: true, children: ['Effort'] }))
   for (const level of EFFORTS) {
-    const current = level === overrideEffort
     rows.push(
       Button({
         key: 'pick-effort-' + level,
-        label: (current ? '✓ ' : '  ') + prettyValue(level),
+        label: '  ' + prettyValue(level),
         plain: true,
-        dimColor: !current,
         onPress: () => onPickEffort(level),
       }),
     )
   }
   rows.push(Text({ children: [' '] }))
 
-  if (overrideModel || overrideEffort) {
-    rows.push(
-      Button({
-        key: 'clear-overrides',
-        label: 'Clear overrides (use the session model)',
-        onPress: () => onClear(),
-      }),
-    )
-  }
   rows.push(
     Button({
       key: 'open-model-picker',
@@ -349,23 +329,14 @@ export function register(on) {
     return next(e)
   })
 
-  // The picks override the next requests: `turn.step` lets a hook name the
-  // model and the effort each request goes out with. Main loop only — a
-  // subagent keeps the model its agent file names.
+  // The Session and Effort rows read the last request's own values: the hook
+  // only observes. Main loop only — a subagent keeps the model its agent file
+  // names.
   on('turn.step', async function* ($, e, next) {
-    let input = e
     try {
-      if (!e.agentId) {
-        const patch = {}
-        if (overrideModel) patch.model = overrideModel
-        if (overrideEffort) patch.effort = overrideEffort
-        if (patch.model !== undefined || patch.effort !== undefined) {
-          input = { ...e, ...patch }
-        }
-        lastStep = { model: input.model, effort: input.effort }
-      }
+      if (!e.agentId) lastStep = { model: e.model, effort: e.effort }
     } catch {}
-    yield* next(input)
+    yield* next(e)
   })
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
@@ -375,28 +346,30 @@ export function register(on) {
 
     if (!data) data = await collect($)
 
-    const pickModel = (value) => {
-      overrideModel = value === overrideModel ? '' : value
-      notice = overrideModel
-        ? 'Next message uses ' + prettyValue(overrideModel) + ' — press it again to clear.'
-        : 'Model override cleared — the session model applies.'
+    const runCommand = async (command, args, okMessage) => {
+      try {
+        await $.command.run({ command, args })
+        notice = okMessage
+      } catch (error) {
+        const reason = error && error.message ? error.message : String(error)
+        try {
+          const filled = await $.prompt.fill({ text: '/' + command + ' ' + args, mode: 'replace' })
+          notice =
+            filled && filled.isFilled
+              ? 'Could not run /' + command + ' directly — it is in your prompt: press Enter.'
+              : 'Could not run /' + command + ': ' + reason
+        } catch {
+          notice = 'Could not run /' + command + ': ' + reason
+        }
+      }
+      data = null
       redraw()
     }
 
-    const pickEffort = (value) => {
-      overrideEffort = value === overrideEffort ? '' : value
-      notice = overrideEffort
-        ? 'Next message uses effort ' + prettyValue(overrideEffort) + ' — press it again to clear.'
-        : 'Effort override cleared.'
-      redraw()
-    }
-
-    const clearOverrides = () => {
-      overrideModel = ''
-      overrideEffort = ''
-      notice = 'Overrides cleared — the session model and effort apply.'
-      redraw()
-    }
+    const pickModel = (value) =>
+      runCommand('model', value, 'Model set to ' + prettyValue(value) + '.')
+    const pickEffort = (value) =>
+      runCommand('effort', value, 'Effort set to ' + prettyValue(value) + '.')
 
     const openModelPicker = async () => {
       try {
@@ -461,7 +434,6 @@ export function register(on) {
             data.configs,
             pickModel,
             pickEffort,
-            clearOverrides,
             openModelPicker,
           )
 
