@@ -178,6 +178,22 @@ async function restoreDraft($) {
   if (filled.isFilled) await $.store.delete(STASH_KEY)
 }
 
+// Brings the keyboard back to the pane: re-opening with `focus` asks for it
+// again. A composer holding text refuses, and the caller tells the person.
+async function focusPane($) {
+  try {
+    const placed = await $.ui.open({
+      id: PANE_ID,
+      title: 'Palette',
+      focus: true,
+      closeOnEscape: true,
+    })
+    return !placed || placed.isPlaced !== false
+  } catch {
+    return false
+  }
+}
+
 function mcpRows(Box, Text, mcps) {
   if (mcps.length === 0) {
     return [Text({ dimColor: true, children: ['No MCP servers configured for this session.'] })]
@@ -288,6 +304,9 @@ export function register(on) {
     } catch {
       // A built-in or another plugin already owns /palette; everything else still loads.
     }
+    // A new session starts with fresh data: servers and models may differ.
+    data = null
+    lastStep = null
     // A draft left stashed by an interrupted session comes back here.
     try {
       await restoreDraft($)
@@ -300,11 +319,24 @@ export function register(on) {
     if (arg === 'mcps' || arg === 'models') tab = arg
 
     const panes = await $.ui.panes()
-    if (panes.some((pane) => pane.id === PANE_ID)) {
+    const mine = panes.find((pane) => pane.id === PANE_ID)
+    if (mine && mine.isFocused) {
       // The shortcut pressed again closes the pane, like a palette toggle.
       try {
         await $.ui.close({ id: PANE_ID })
       } catch {}
+      return {}
+    }
+    if (mine) {
+      // Open but unfocused (a command ran): the shortcut brings it back.
+      notice = ''
+      const back = await focusPane($)
+      if (!back) {
+        notice = 'Press Ctrl+X Tab to give the pane the keyboard.'
+        try {
+          await $.ui.invalidate('ui.render')
+        } catch {}
+      }
       return {}
     }
 
@@ -344,7 +376,18 @@ export function register(on) {
     const { Box, Text, Button } = $.ui.resolve(e)
     const redraw = () => $.ui.invalidate('ui.render')
 
-    if (!data) data = await collect($)
+    if (!data) {
+      try {
+        data = await collect($)
+      } catch (error) {
+        data = {
+          mcps: [],
+          models: {},
+          configs: [],
+          error: error && error.message ? error.message : String(error),
+        }
+      }
+    }
 
     const runCommand = async (command, args, okMessage) => {
       try {
@@ -352,18 +395,41 @@ export function register(on) {
         notice = okMessage
       } catch (error) {
         const reason = error && error.message ? error.message : String(error)
+        // The command may not be available here — /effort needs a model that
+        // supports it; say so instead of filling a prompt that cannot run.
+        let available = true
         try {
-          const filled = await $.prompt.fill({ text: '/' + command + ' ' + args, mode: 'replace' })
+          const commands = await $.command.list()
+          available = commands.some((info) => info.name === command)
+        } catch {}
+        if (!available) {
           notice =
-            filled && filled.isFilled
-              ? 'Could not run /' + command + ' directly — it is in your prompt: press Enter.'
+            command === 'effort'
+              ? 'Effort is not available on this model — switch to Opus or Sonnet to adjust it.'
               : 'Could not run /' + command + ': ' + reason
-        } catch {
-          notice = 'Could not run /' + command + ': ' + reason
+        } else {
+          try {
+            const filled = await $.prompt.fill({
+              text: '/' + command + ' ' + args,
+              mode: 'replace',
+            })
+            notice =
+              filled && filled.isFilled
+                ? 'Could not run /' + command + ' directly — it is in your prompt: press Enter.'
+                : 'Could not run /' + command + ': ' + reason
+          } catch {
+            notice = 'Could not run /' + command + ': ' + reason
+          }
         }
       }
       data = null
       redraw()
+      // The keyboard went with the command: bring it back so the next pick lands.
+      const back = await focusPane($)
+      if (!back && notice === okMessage) {
+        notice = okMessage + ' Press Ctrl+X Tab to return to the pane.'
+        redraw()
+      }
     }
 
     const pickModel = (value) =>
@@ -423,8 +489,12 @@ export function register(on) {
       ],
     })
 
-    const body =
-      tab === 'mcps'
+    const body = data.error
+      ? [
+          Text({ children: ['Could not read the configuration: ' + data.error] }),
+          Text({ dimColor: true, children: ['Press r to retry.'] }),
+        ]
+      : tab === 'mcps'
         ? mcpRows(Box, Text, data.mcps)
         : modelRows(
             Box,
